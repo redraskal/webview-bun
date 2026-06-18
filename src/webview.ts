@@ -1,5 +1,13 @@
+import { writeFileSync, unlinkSync } from "fs";
+import { tmpdir } from "os";
+import { resolve } from "path";
+import { pathToFileURL } from "url";
+import { type Hash, createHash } from "crypto"
+
 import { CString, FFIType, JSCallback, type Pointer } from "bun:ffi";
 import { encodeCString, instances, lib } from "./ffi";
+
+const WINDOWS_NAVIGATE_TO_STRING_LIMIT_BYTES = 2 * 1024 * 1024;
 
 /** Window size */
 export interface Size {
@@ -27,6 +35,8 @@ export const enum SizeHint {
 export class Webview {
   #handle: Pointer | null = null;
   #callbacks: Map<string, JSCallback> = new Map();
+  #htmlTempFilePath: string | null = null;
+  #hashInstance: Hash | null = null;
 
   /** **UNSAFE**: Highly unsafe API, beware!
    *
@@ -157,6 +167,12 @@ export class Webview {
    */
   destroy() {
     for (const callback of this.#callbacks.keys()) this.unbind(callback);
+    if (this.#htmlTempFilePath) {
+      try {
+        unlinkSync(this.#htmlTempFilePath);
+      } catch {}
+      this.#htmlTempFilePath = null;
+    }
     lib.symbols.webview_terminate(this.#handle);
     lib.symbols.webview_destroy(this.#handle);
     this.#handle = null;
@@ -175,6 +191,22 @@ export class Webview {
    * Sets the current HTML of the webview to the given html string.
    */
   setHTML(html: string) {
+    // Windows has a limit on string lengths
+    if (process.platform === "win32") {
+      const htmlByteLength = Buffer.byteLength(html, "utf8");
+      if (htmlByteLength > WINDOWS_NAVIGATE_TO_STRING_LIMIT_BYTES) {
+        this.#hashInstance ??= createHash("md5");
+        const htmlHash = this.#hashInstance.update(html).digest("hex");
+
+        const tempFilePath = resolve(tmpdir(), `webview-bun-${htmlHash}.html`);
+        writeFileSync(tempFilePath, html, "utf8");
+        this.#htmlTempFilePath = tempFilePath;
+
+        this.navigate(pathToFileURL(this.#htmlTempFilePath).href);
+        return;
+      }
+    }
+
     lib.symbols.webview_set_html(this.#handle, encodeCString(html));
   }
 
