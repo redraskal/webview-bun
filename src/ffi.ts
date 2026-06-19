@@ -92,3 +92,27 @@ export const lib = dlopen(lib_file.default, {
     returns: FFIType.i32,
   },
 });
+
+export const shell32 =
+  process.platform === "win32"
+    ? dlopen("shell32.dll", {
+        ExtractIconExW: {
+          args: [FFIType.ptr, FFIType.i32, FFIType.ptr, FFIType.ptr, FFIType.u32],
+          returns: FFIType.u32,
+        },
+      })
+    : null;
+
+export const user32 =
+  process.platform === "win32"
+    ? dlopen("user32.dll", {
+        SendMessageW: {
+          args: [FFIType.ptr, FFIType.i32, FFIType.i32, FFIType.i64],
+          returns: FFIType.ptr,
+        },
+        DestroyIcon: {
+          args: [FFIType.i64],
+          returns: FFIType.i32,
+        },
+      })
+    : null;

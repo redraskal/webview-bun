@@ -5,9 +5,12 @@ import { pathToFileURL } from "url";
 import { type Hash, createHash } from "crypto"
 
 import { CString, FFIType, JSCallback, type Pointer } from "bun:ffi";
-import { encodeCString, instances, lib } from "./ffi";
+import { encodeCString, instances, lib, shell32, user32 } from "./ffi";
 
 const WINDOWS_NAVIGATE_TO_STRING_LIMIT_BYTES = 2 * 1024 * 1024;
+const WM_SETICON = 0x0080;
+const ICON_SMALL = 0;
+const ICON_BIG = 1;
 
 /** Window size */
 export interface Size {
@@ -37,6 +40,8 @@ export class Webview {
   #callbacks: Map<string, JSCallback> = new Map();
   #htmlTempFilePath: string | null = null;
   #hashInstance: Hash | null = null;
+  #smallWindowIcon: bigint | null = null;
+  #largeWindowIcon: bigint | null = null;
 
   /** **UNSAFE**: Highly unsafe API, beware!
    *
@@ -158,7 +163,35 @@ export class Webview {
         ? debugOrHandle
         : lib.symbols.webview_create(Number(debugOrHandle), window);
     if (size !== undefined) this.size = size;
+    queueMicrotask(() => this.#applyEmbeddedExecutableIcon());
     instances.push(this);
+  }
+
+  #applyEmbeddedExecutableIcon() {
+    if (process.platform !== "win32" || !shell32 || !user32 || !this.#handle || !this.unsafeWindowHandle) {
+      return;
+    }
+
+    const executablePath = Buffer.from(`${process.execPath}\0`, "utf16le");
+    const largeIconBuffer = Buffer.alloc(8);
+    const smallIconBuffer = Buffer.alloc(8);
+    const extracted = shell32.symbols.ExtractIconExW(
+      executablePath,
+      0,
+      largeIconBuffer,
+      smallIconBuffer,
+      1,
+    );
+
+    if (!extracted) {
+      return;
+    }
+
+    this.#largeWindowIcon = largeIconBuffer.readBigUInt64LE();
+    this.#smallWindowIcon = smallIconBuffer.readBigUInt64LE();
+
+    user32.symbols.SendMessageW(this.unsafeWindowHandle, WM_SETICON, ICON_BIG, this.#largeWindowIcon || this.#smallWindowIcon);
+    user32.symbols.SendMessageW(this.unsafeWindowHandle, WM_SETICON, ICON_SMALL, this.#smallWindowIcon || this.#largeWindowIcon);
   }
 
   /**
@@ -172,6 +205,14 @@ export class Webview {
         unlinkSync(this.#htmlTempFilePath);
       } catch {}
       this.#htmlTempFilePath = null;
+    }
+    if (user32 && this.#largeWindowIcon !== null) {
+      user32.symbols.DestroyIcon(this.#largeWindowIcon);
+      this.#largeWindowIcon = null;
+    }
+    if (user32 && this.#smallWindowIcon !== null) {
+      user32.symbols.DestroyIcon(this.#smallWindowIcon);
+      this.#smallWindowIcon = null;
     }
     lib.symbols.webview_terminate(this.#handle);
     lib.symbols.webview_destroy(this.#handle);
